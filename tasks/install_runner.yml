@@ -17,7 +17,7 @@
     body_format: json
   check_mode: false
   register: api_response
-  run_once: yes
+  run_once: true
   become: false
   delegate_to: localhost
   when: runner_version == "latest"
@@ -32,7 +32,7 @@
   register: runner_installed
   check_mode: false
   changed_when: False
-  ignore_errors: yes
+  ignore_errors: true
 
 - name: Create temporary directory for archive
   ansible.builtin.tempfile:
@@ -99,7 +99,7 @@
     {{ runner_extra_config_args }}"
   args:
     chdir: "{{ runner_dir }}"
-  become: yes
+  become: true
   become_user: "{{ runner_user }}"
   no_log: "{{ hide_sensitive_logs | bool }}"
   when: runner_name not in registered_runners.json.runners|map(attribute='name')|list
@@ -116,7 +116,7 @@
     --replace"
   args:
     chdir: "{{ runner_dir }}"
-  become: yes
+  become: true
   become_user: "{{ runner_user }}"
   no_log: "{{ hide_sensitive_logs | bool }}"
   when: runner_name in registered_runners.json.runners|map(attribute='name')|list and reinstall_runner and not runner_org
@@ -132,9 +132,36 @@
     src: "{{ runner_dir }}/.service"
   register: runner_service
 
+- name: Register service name
+  set_fact:
+    runner_service_name: "{{ runner_service.content | b64decode | replace('\n', '') }}"
+
+- name: Create .service drop-in for RHEL based distros
+  block:
+  - name: Create .service drop-in directory
+    file:
+      path: "/etc/systemd/system/{{ runner_service_name }}.d"
+      owner: root
+      group: root
+      mode: 0755
+      state: directory
+  - name: Create drop-in file
+    copy:
+      content: |
+        [Service]
+        ExecStart=
+        ExecStart=/bin/bash -c "{{ runner_dir }}/runsvc.sh"
+      dest: /etc/systemd/system/{{ runner_service_name }}.d/exec.conf
+      owner: "{{ runner_user }}"
+      mode: 0644
+  - name: Reload systemd daemon
+    systemd:
+      daemon_reload: true
+  when: ansible_os_family == 'RedHat'
+
 - name: START and enable Github Actions Runner service
   ansible.builtin.systemd:
-    name: "{{ runner_service.content | b64decode | replace('\n', '') }}"
+    name: "{{ runner_service_name }}"
     state: started
     enabled: yes
   ignore_errors: "{{ ansible_check_mode }}"
